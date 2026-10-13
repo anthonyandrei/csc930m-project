@@ -271,7 +271,7 @@ def main():
 
     parser.add_argument(
         "ipynb_file",
-        help="Path to the .ipynb file"
+        help="phase-1.ipynb"
     )
 
     args = parser.parse_args()
