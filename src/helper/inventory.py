@@ -2,6 +2,8 @@ import os
 import platform
 import sys
 import importlib.metadata
+import hashlib
+import filecmp
 import pandas as pd
 from PIL import Image
 
@@ -88,6 +90,7 @@ def load_and_validate_metadata(csv_path):
         "expected_test": EXPECTED_TEST_RECORDS,
         "unique_ids": unique_ids,
         "duplicate_ids": total_rows - unique_ids,
+        "fully_repeated_rows": int(df.duplicated().sum()),
         "has_nulls": any(v > 0 for v in null_counts.values()),
         "unexpected_classes": list(unexpected_classes),
         "unexpected_qualities": list(unexpected_qualities),
@@ -152,3 +155,61 @@ def audit_image_inventory(metadata_df, image_dir):
     }
 
     return inventory_df, summary, missing_ids, decode_failures, extra_files
+
+
+def audit_duplicate_images(inventory_df):
+    readable = inventory_df.loc[inventory_df["is_readable"]]
+    paths = readable["file_path"].drop_duplicates()
+    digests = {}
+    read_failures = []
+
+    for path in paths:
+        try:
+            digest = hashlib.sha256()
+            with open(path, "rb") as image_file:
+                for chunk in iter(lambda: image_file.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            digests.setdefault(digest.digest(), []).append(path)
+        except OSError:
+            read_failures.append(path)
+
+    groups = []
+    for candidates in digests.values():
+        confirmed = []
+        for path in candidates:
+            for group in confirmed:
+                if filecmp.cmp(path, group[0], shallow=False):
+                    group.append(path)
+                    break
+            else:
+                confirmed.append([path])
+        groups.extend(group for group in confirmed if len(group) > 1)
+
+    columns = ["mapillary_image_id", "surface_type", "surface_quality", "train"]
+    members = []
+    for number, group in enumerate(groups, 1):
+        rows = readable.loc[readable["file_path"].isin(group), columns].drop_duplicates()
+        rows = rows.assign(group=number)
+        members.append(rows)
+    group_df = pd.concat(members, ignore_index=True) if members else pd.DataFrame(columns=["group", *columns])
+
+    summary = {
+        "compared_files": len(paths) - len(read_failures),
+        "read_failures": len(read_failures),
+        "identical_file_groups": len(groups),
+        "affected_image_ids": group_df["mapillary_image_id"].nunique(),
+        "within_train_groups": 0,
+        "within_test_groups": 0,
+        "cross_split_groups": 0,
+        "conflicting_label_groups": 0,
+    }
+    for _, rows in group_df.groupby("group"):
+        flags = set(rows["train"])
+        summary["within_train_groups"] += rows.loc[rows["train"] == True, "mapillary_image_id"].nunique() >= 2
+        summary["within_test_groups"] += rows.loc[rows["train"] == False, "mapillary_image_id"].nunique() >= 2
+        summary["cross_split_groups"] += flags == {True, False}
+        summary["conflicting_label_groups"] += (
+            rows[["surface_type", "surface_quality"]].drop_duplicates().shape[0] > 1
+        )
+
+    return summary, group_df, read_failures
