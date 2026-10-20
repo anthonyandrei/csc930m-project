@@ -1,5 +1,3 @@
-"""Report whether a saved Phase 1 notebook meets the course format limits."""
-
 import argparse
 import json
 import re
@@ -13,17 +11,14 @@ MAX_FIGURES = 15
 
 
 def count_words(text):
-    """Count whitespace-separated words, matching the notebook rule."""
     return len(re.findall(r"\S+", text))
 
 
 def count_code_lines(source):
-    """Count nonblank lines in one code cell."""
     return sum(1 for line in source.splitlines() if line.strip())
 
 
 def has_comment(code):
-    """Detect comment markers outside simple quoted strings in a code cell."""
     for line in code.splitlines():
         stripped = line.strip()
 
@@ -68,7 +63,6 @@ def has_comment(code):
 
 
 def count_figures(notebook):
-    """Count embedded image outputs across the notebook's code cells."""
     figure_count = 0
 
     for cell in notebook.get("cells", []):
@@ -100,7 +94,6 @@ def count_figures(notebook):
 
 
 def check_notebook(ipynb_path):
-    """Read a saved notebook and print each format check and its violations."""
     with open(ipynb_path, "r", encoding="utf-8") as file:
         notebook = json.load(file)
 
@@ -272,14 +265,13 @@ def check_notebook(ipynb_path):
 
 
 def main():
-    """Parse the notebook path and run the format report from the CLI."""
     parser = argparse.ArgumentParser(
         description="Check restrictions for an IPython/Jupyter notebook."
     )
 
     parser.add_argument(
         "ipynb_file",
-        help="phase-1.ipynb"
+        help="Path to the .ipynb file"
     )
 
     args = parser.parse_args()
