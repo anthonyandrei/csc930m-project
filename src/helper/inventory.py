@@ -223,15 +223,15 @@ def audit_duplicate_images(inventory_df):
         "within_train_groups": 0,
         "within_test_groups": 0,
         "cross_split_groups": 0,
-        "conflicting_label_groups": 0,
+        "conflicting_surface_type_groups": 0,
+        "conflicting_surface_quality_groups": 0,
     }
     for _, rows in group_df.groupby("group"):
         flags = set(rows["train"])
         summary["within_train_groups"] += rows.loc[rows["train"] == True, "mapillary_image_id"].nunique() >= 2
         summary["within_test_groups"] += rows.loc[rows["train"] == False, "mapillary_image_id"].nunique() >= 2
         summary["cross_split_groups"] += flags == {True, False}
-        summary["conflicting_label_groups"] += (
-            rows[["surface_type", "surface_quality"]].drop_duplicates().shape[0] > 1
-        )
+        summary["conflicting_surface_type_groups"] += rows["surface_type"].nunique() > 1
+        summary["conflicting_surface_quality_groups"] += rows["surface_quality"].nunique() > 1
 
     return summary, group_df, read_failures
