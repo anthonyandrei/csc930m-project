@@ -1,3 +1,5 @@
+"""Audit StreetSurfaceVis release metadata and its 256-pixel image directory."""
+
 import os
 import platform
 import sys
@@ -41,6 +43,7 @@ EXPECTED_COLUMNS = [
 
 
 def get_environment_info():
+    """Return the Python, OS, and package versions shown in the notebook."""
     packages = ["numpy", "pandas", "opencv-python", "pillow"]
     versions = {}
     for pkg in packages:
@@ -57,6 +60,12 @@ def get_environment_info():
 
 
 def load_and_validate_metadata(csv_path):
+    """Load the full release CSV and summarize its schema, labels, and split.
+
+    Duplicate counts are rows beyond the first matching image ID or complete
+    CSV record. The function reports unexpected values without changing rows.
+    Returns the loaded DataFrame and a summary dictionary.
+    """
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"Metadata file not found at: {csv_path}")
 
@@ -101,6 +110,12 @@ def load_and_validate_metadata(csv_path):
 
 
 def audit_image_inventory(metadata_df, image_dir):
+    """Match each metadata row to a JPG and check whether Pillow can open it.
+
+    Returns the row-level inventory, count summary, missing image IDs,
+    decode failures as (ID, error, byte size), and extra filenames. A decode
+    failure is excluded from the later byte comparison.
+    """
     if not os.path.exists(image_dir):
         raise FileNotFoundError(f"Image directory not found at: {image_dir}")
 
@@ -158,6 +173,13 @@ def audit_image_inventory(metadata_df, image_dir):
 
 
 def audit_duplicate_images(inventory_df):
+    """Find byte-identical files among distinct readable inventory paths.
+
+    SHA-256 narrows candidate matches; a byte comparison confirms each group.
+    Returns group counts, every member's ID, labels and published split flag,
+    and paths that could not be read while hashing. Within-partition and
+    cross-split group counts can overlap for groups with several members.
+    """
     readable = inventory_df.loc[inventory_df["is_readable"]]
     paths = readable["file_path"].drop_duplicates()
     digests = {}
