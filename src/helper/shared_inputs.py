@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 from PIL import Image, ImageOps
 
 SURFACE_TYPES = ("asphalt", "concrete", "paving_stones", "sett", "unpaved")
@@ -54,3 +55,49 @@ def prepare_split(records, image_dir):
         images[index] = prepare_image(Path(image_dir) / f"{image_id}.jpg")
     return {"image_ids": ids.to_numpy(copy=True), "labels": labels.to_numpy(dtype=np.int64),
             "images": images, "flat": images.reshape(len(records), -1)}
+
+
+def evaluate_predictions(labels, predictions):
+    """Score integer IDs in fixed class order; undefined class scores are zero.
+
+    Confusion-matrix rows are actual labels; columns are predicted labels.
+    Macro-F1 includes all five classes, even when a split has an absent class.
+    """
+    truth, predicted = np.asarray(labels), np.asarray(predictions)
+    for values in (truth, predicted):
+        if values.ndim != 1 or not len(values) or values.dtype.kind not in "iu":
+            raise ValueError("Labels and predictions must be nonempty 1D integer IDs")
+        if not np.isin(values, range(len(SURFACE_TYPES))).all():
+            raise ValueError("Class IDs must be in the fixed range 0 to 4")
+    if truth.shape != predicted.shape:
+        raise ValueError("Each label needs exactly one prediction")
+    matrix = np.zeros((5, 5), dtype=np.int64)
+    np.add.at(matrix, (truth, predicted), 1)
+    correct = matrix.diagonal()
+    support, predicted_counts = matrix.sum(axis=1), matrix.sum(axis=0)
+    precision = np.divide(correct, predicted_counts, out=np.zeros(5), where=predicted_counts != 0)
+    recall = np.divide(correct, support, out=np.zeros(5), where=support != 0)
+    denominator = support + predicted_counts
+    f1 = np.divide(2 * correct, denominator, out=np.zeros(5), where=denominator != 0)
+    return {
+        "accuracy": float(correct.sum() / len(truth)), "macro_f1": float(f1.mean()),
+        "per_class": pd.DataFrame({"precision": precision, "recall": recall,
+                                   "f1": f1, "support": support}, index=SURFACE_TYPES),
+        "confusion_matrix": pd.DataFrame(matrix, index=pd.Index(SURFACE_TYPES, name="actual"),
+                                         columns=pd.Index(SURFACE_TYPES, name="predicted")),
+    }
+
+
+def rank_candidates(candidates):
+    """Return at most five candidates, best first; exact ties keep grid order.
+
+    Callers supply full-precision validation scores from evaluate_predictions
+    and retain settings alongside them. This function never uses test scores.
+    """
+    for candidate in candidates:
+        for key in ("validation_macro_f1", "validation_accuracy"):
+            score = candidate[key]
+            if not np.isfinite(score) or not 0 <= score <= 1:
+                raise ValueError(f"{key} must be a finite score between zero and one")
+    return sorted(candidates, key=lambda row: (-row["validation_macro_f1"],
+                                               -row["validation_accuracy"]))[:5]
