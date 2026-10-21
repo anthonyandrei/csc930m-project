@@ -21,14 +21,18 @@ def prepare_image(path):
     try:
         with Image.open(path) as source:
             width, height = source.size
-            box = tuple(round(value) for value in
-                        (width * 0.25, height * 0.5, width * 0.75, height))
+            box = tuple(
+                round(value)
+                for value in (width * 0.25, height * 0.5, width * 0.75, height)
+            )
             if box[2] <= box[0] or box[3] <= box[1]:
                 raise ValueError("Image is too small for the lower-center crop")
             crop = source.convert("RGB").crop(box)
             fitted = ImageOps.contain(crop, (128, 96), method=Image.Resampling.LANCZOS)
             prepared = Image.new("RGB", (128, 96), (0, 0, 0))
-            prepared.paste(fitted, ((128 - fitted.width) // 2, (96 - fitted.height) // 2))
+            prepared.paste(
+                fitted, ((128 - fitted.width) // 2, (96 - fitted.height) // 2)
+            )
             return np.asarray(prepared, dtype=np.float32) / np.float32(255.0)
     except (OSError, ValueError) as error:
         raise ValueError(f"Cannot prepare required image {path}: {error}") from error
@@ -45,16 +49,25 @@ def prepare_split(records, image_dir):
         raise ValueError("A split needs nonempty, unique image IDs")
     if not ids.map(lambda value: isinstance(value, str) and value.isdigit()).all():
         raise ValueError("Image IDs must be digit strings")
-    if records["split"].nunique(dropna=False) != 1 or not records["split"].isin(["train", "val", "test"]).all():
-        raise ValueError("Every record must belong to the same train, val, or test split")
+    if (
+        records["split"].nunique(dropna=False) != 1
+        or not records["split"].isin(["train", "val", "test"]).all()
+    ):
+        raise ValueError(
+            "Every record must belong to the same train, val, or test split"
+        )
     labels = records["surface_type"].map(LABEL_IDS)
     if labels.isna().any():
         raise ValueError("Unknown or missing surface-type label")
     images = np.empty((len(records), *IMAGE_SHAPE), dtype=np.float32)
     for index, image_id in enumerate(ids):
         images[index] = prepare_image(Path(image_dir) / f"{image_id}.jpg")
-    return {"image_ids": ids.to_numpy(copy=True), "labels": labels.to_numpy(dtype=np.int64),
-            "images": images, "flat": images.reshape(len(records), -1)}
+    return {
+        "image_ids": ids.to_numpy(copy=True),
+        "labels": labels.to_numpy(dtype=np.int64),
+        "images": images,
+        "flat": images.reshape(len(records), -1),
+    }
 
 
 def evaluate_predictions(labels, predictions):
@@ -75,16 +88,24 @@ def evaluate_predictions(labels, predictions):
     np.add.at(matrix, (truth, predicted), 1)
     correct = matrix.diagonal()
     support, predicted_counts = matrix.sum(axis=1), matrix.sum(axis=0)
-    precision = np.divide(correct, predicted_counts, out=np.zeros(5), where=predicted_counts != 0)
+    precision = np.divide(
+        correct, predicted_counts, out=np.zeros(5), where=predicted_counts != 0
+    )
     recall = np.divide(correct, support, out=np.zeros(5), where=support != 0)
     denominator = support + predicted_counts
     f1 = np.divide(2 * correct, denominator, out=np.zeros(5), where=denominator != 0)
     return {
-        "accuracy": float(correct.sum() / len(truth)), "macro_f1": float(f1.mean()),
-        "per_class": pd.DataFrame({"precision": precision, "recall": recall,
-                                   "f1": f1, "support": support}, index=SURFACE_TYPES),
-        "confusion_matrix": pd.DataFrame(matrix, index=pd.Index(SURFACE_TYPES, name="actual"),
-                                         columns=pd.Index(SURFACE_TYPES, name="predicted")),
+        "accuracy": float(correct.sum() / len(truth)),
+        "macro_f1": float(f1.mean()),
+        "per_class": pd.DataFrame(
+            {"precision": precision, "recall": recall, "f1": f1, "support": support},
+            index=SURFACE_TYPES,
+        ),
+        "confusion_matrix": pd.DataFrame(
+            matrix,
+            index=pd.Index(SURFACE_TYPES, name="actual"),
+            columns=pd.Index(SURFACE_TYPES, name="predicted"),
+        ),
     }
 
 
@@ -99,5 +120,7 @@ def rank_candidates(candidates):
             score = candidate[key]
             if not np.isfinite(score) or not 0 <= score <= 1:
                 raise ValueError(f"{key} must be a finite score between zero and one")
-    return sorted(candidates, key=lambda row: (-row["validation_macro_f1"],
-                                               -row["validation_accuracy"]))[:5]
+    return sorted(
+        candidates,
+        key=lambda row: (-row["validation_macro_f1"], -row["validation_accuracy"]),
+    )[:5]
