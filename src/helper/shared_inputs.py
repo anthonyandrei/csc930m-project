@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageOps
+from sklearn.metrics import accuracy_score, confusion_matrix, precision_recall_fscore_support
 
 SURFACE_TYPES = ("asphalt", "concrete", "paving_stones", "sett", "unpaved")
 LABEL_IDS = {name: number for number, name in enumerate(SURFACE_TYPES)}
@@ -84,25 +85,19 @@ def evaluate_predictions(labels, predictions):
             raise ValueError("Class IDs must be in the fixed range 0 to 4")
     if truth.shape != predicted.shape:
         raise ValueError("Each label needs exactly one prediction")
-    matrix = np.zeros((5, 5), dtype=np.int64)
-    np.add.at(matrix, (truth, predicted), 1)
-    correct = matrix.diagonal()
-    support, predicted_counts = matrix.sum(axis=1), matrix.sum(axis=0)
-    precision = np.divide(
-        correct, predicted_counts, out=np.zeros(5), where=predicted_counts != 0
+    class_ids = list(range(len(SURFACE_TYPES)))
+    precision, recall, f1, support = precision_recall_fscore_support(
+        truth, predicted, labels=class_ids, average=None, zero_division=0
     )
-    recall = np.divide(correct, support, out=np.zeros(5), where=support != 0)
-    denominator = support + predicted_counts
-    f1 = np.divide(2 * correct, denominator, out=np.zeros(5), where=denominator != 0)
     return {
-        "accuracy": float(correct.sum() / len(truth)),
+        "accuracy": float(accuracy_score(truth, predicted)),
         "macro_f1": float(f1.mean()),
         "per_class": pd.DataFrame(
             {"precision": precision, "recall": recall, "f1": f1, "support": support},
             index=SURFACE_TYPES,
         ),
         "confusion_matrix": pd.DataFrame(
-            matrix,
+            confusion_matrix(truth, predicted, labels=class_ids),
             index=pd.Index(SURFACE_TYPES, name="actual"),
             columns=pd.Index(SURFACE_TYPES, name="predicted"),
         ),
