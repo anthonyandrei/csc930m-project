@@ -181,6 +181,7 @@ def audit_duplicate_images(inventory_df):
     cross-split group counts can overlap for groups with several members.
     """
     readable = inventory_df.loc[inventory_df["is_readable"]]
+    # Repeated metadata rows should not make a file count as its own duplicate.
     paths = readable["file_path"].drop_duplicates()
     digests = {}
     read_failures = []
@@ -189,8 +190,10 @@ def audit_duplicate_images(inventory_df):
         try:
             digest = hashlib.sha256()
             with open(path, "rb") as image_file:
+                # Read 1 MiB at a time; the empty byte string ends the loop at EOF.
                 for chunk in iter(lambda: image_file.read(1024 * 1024), b""):
                     digest.update(chunk)
+            # Files with the same hash become candidates for a full byte comparison.
             digests.setdefault(digest.digest(), []).append(path)
         except OSError:
             read_failures.append(path)
@@ -200,16 +203,19 @@ def audit_duplicate_images(inventory_df):
         confirmed = []
         for path in candidates:
             for group in confirmed:
+                # Compare with one member of each group, even when hashes match.
                 if filecmp.cmp(path, group[0], shallow=False):
                     group.append(path)
                     break
             else:
+                # Python runs this else only if the inner loop never reaches break.
                 confirmed.append([path])
         groups.extend(group for group in confirmed if len(group) > 1)
 
     columns = ["mapillary_image_id", "surface_type", "surface_quality", "train"]
     members = []
     for number, group in enumerate(groups, 1):
+        # Restore each file's IDs and labels without repeating identical metadata rows.
         rows = readable.loc[readable["file_path"].isin(group), columns].drop_duplicates()
         rows = rows.assign(group=number)
         members.append(rows)
@@ -228,9 +234,11 @@ def audit_duplicate_images(inventory_df):
     }
     for _, rows in group_df.groupby("group"):
         flags = set(rows["train"])
+        # Count distinct IDs per split; one group can count within and across splits.
         summary["within_train_groups"] += rows.loc[rows["train"] == True, "mapillary_image_id"].nunique() >= 2
         summary["within_test_groups"] += rows.loc[rows["train"] == False, "mapillary_image_id"].nunique() >= 2
         summary["cross_split_groups"] += flags == {True, False}
+        # Multiple labels for identical files indicate a labeling conflict.
         summary["conflicting_surface_type_groups"] += rows["surface_type"].nunique() > 1
         summary["conflicting_surface_quality_groups"] += rows["surface_quality"].nunique() > 1
 
