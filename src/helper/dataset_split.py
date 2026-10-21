@@ -1,7 +1,6 @@
 import os
 from typing import Tuple, Dict, Any
 import pandas as pd
-from sklearn.model_selection import StratifiedGroupKFold
 
 
 def filter_usable_dataset(
@@ -9,27 +8,22 @@ def filter_usable_dataset(
     duplicate_groups: pd.DataFrame,
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """Filter out unreadable images and conflicting duplicate pairs."""
-    # Step 1: Find image IDs in duplicate groups with conflicting labels
     conflicting_ids = []
     for _, rows in duplicate_groups.groupby("group"):
         labels = rows[["surface_type", "surface_quality"]].drop_duplicates()
         if len(labels) > 1:
             conflicting_ids.extend(rows["mapillary_image_id"].tolist())
 
-    # Step 2: Find unreadable image IDs (decode failures)
     unreadable_ids = inventory_df.loc[
         ~inventory_df["is_readable"], "mapillary_image_id"
     ].tolist()
 
-    # Step 3: Combine all excluded IDs into a unique sorted list
     excluded_ids = sorted(list(set(conflicting_ids + unreadable_ids)))
 
-    # Step 4: Keep only usable images
     usable_df = inventory_df.loc[
         ~inventory_df["mapillary_image_id"].isin(excluded_ids)
     ].copy()
 
-    # Step 5: Build audit log
     exclusions_dict = {
         "unreadable_count": len(unreadable_ids),
         "unreadable_ids": unreadable_ids,
@@ -51,7 +45,6 @@ def generate_dataset_splits(
     """Generate train/val/test splits preventing duplicate leakage and preserving test."""
     df = usable_df.copy()
 
-    # Step 1: Create a grouping column so duplicate groups stay together
     dup_map = dict(
         zip(duplicate_groups["mapillary_image_id"], duplicate_groups["group"])
     )
@@ -59,34 +52,43 @@ def generate_dataset_splits(
         lambda x: f"dup_group_{dup_map[x]}" if x in dup_map else f"single_{x}"
     )
 
-    # Step 2: Assign published test records directly to 'test'
     df["split"] = "unassigned"
     test_mask = df["train"] == False
     df.loc[test_mask, "split"] = "test"
 
-    # Step 3: Extract the training pool candidates
     train_pool_mask = df["train"] == True
     train_pool = df.loc[train_pool_mask].copy()
 
-    # Step 4: Use StratifiedGroupKFold to enforce stratification AND grouping
-    # n_splits=5 provides an 80% train / 20% val partition
-    n_splits = round(1.0 / (1.0 - train_val_ratio))
-    sgkf = StratifiedGroupKFold(
-        n_splits=n_splits, shuffle=True, random_state=random_state
-    )
-
-    train_idx_rel, val_idx_rel = next(
-        sgkf.split(
-            X=train_pool,
-            y=train_pool["surface_type"],
-            groups=train_pool["group_id"],
+    group_records = []
+    for gid, rows in train_pool.groupby("group_id"):
+        group_records.append(
+            {
+                "group_id": gid,
+                "surface_type": rows["surface_type"].iloc[0],
+                "image_ids": rows["mapillary_image_id"].tolist(),
+                "size": len(rows),
+            }
         )
-    )
+    group_df = pd.DataFrame(group_records)
 
-    train_ids = train_pool.iloc[train_idx_rel]["mapillary_image_id"].values
-    val_ids = train_pool.iloc[val_idx_rel]["mapillary_image_id"].values
+    val_ids = []
+    train_ids = []
 
-    # Step 5: Assign split labels
+    for _, cls_groups in group_df.groupby("surface_type"):
+        shuffled = cls_groups.sample(frac=1.0, random_state=random_state)
+        total_images = cls_groups["size"].sum()
+        target_val = int(round(total_images * (1.0 - train_val_ratio)))
+
+        curr_val = 0
+        for _, row in shuffled.iterrows():
+            if (curr_val + row["size"] <= target_val) or (
+                curr_val == 0 and target_val > 0
+            ):
+                val_ids.extend(row["image_ids"])
+                curr_val += row["size"]
+            else:
+                train_ids.extend(row["image_ids"])
+
     df.loc[df["mapillary_image_id"].isin(train_ids), "split"] = "train"
     df.loc[df["mapillary_image_id"].isin(val_ids), "split"] = "val"
 
@@ -102,7 +104,6 @@ def verify_dataset_splits(
     val_ids = set(split_df.loc[split_df["split"] == "val", "mapillary_image_id"])
     test_ids = set(split_df.loc[split_df["split"] == "test", "mapillary_image_id"])
 
-    # Check 1: Mutually disjoint sets
     train_val_overlap = train_ids & val_ids
     train_test_overlap = train_ids & test_ids
     val_test_overlap = val_ids & test_ids
@@ -112,13 +113,11 @@ def verify_dataset_splits(
         and len(val_test_overlap) == 0
     )
 
-    # Check 2: Test preservation
     original_test_ids = set(
         split_df.loc[split_df["train"] == False, "mapillary_image_id"]
     )
     test_preserved = test_ids == original_test_ids
 
-    # Check 3: Zero duplicate leakage across splits
     leakage_groups = []
     present_dups = duplicate_groups.loc[
         duplicate_groups["mapillary_image_id"].isin(split_df["mapillary_image_id"])
@@ -131,11 +130,9 @@ def verify_dataset_splits(
             leakage_groups.append(group_num)
     zero_leakage = len(leakage_groups) == 0
 
-    # Check 4: Complete coverage
     total_records = len(split_df)
     coverage_ok = len(train_ids) + len(val_ids) + len(test_ids) == total_records
 
-    # Mathematical assertions
     assert is_disjoint, f"Partitions overlap! Overlaps: TV={len(train_val_overlap)}, TT={len(train_test_overlap)}, VT={len(val_test_overlap)}"
     assert test_preserved, "Published test set was altered!"
     assert zero_leakage, f"Duplicate groups leaked across splits: {leakage_groups}"
