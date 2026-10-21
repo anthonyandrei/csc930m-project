@@ -1,11 +1,12 @@
 """Audit StreetSurfaceVis release metadata and its 256-pixel image directory."""
 
+import filecmp
+import hashlib
+import importlib.metadata
 import os
 import platform
 import sys
-import importlib.metadata
-import hashlib
-import filecmp
+
 import pandas as pd
 from PIL import Image
 
@@ -88,7 +89,7 @@ def load_and_validate_metadata(csv_path):
     unexpected_qualities = qualities_found - EXPECTED_QUALITIES
 
     train_values_found = set(df["train"].dropna().unique())
-    invalid_train_flags = train_values_found - {True, False, 1, 0, "True", "False"}
+    invalid_train_flags = train_values_found - {True, False, "True", "False"}
 
     audit_summary = {
         "total_records": total_rows,
@@ -146,8 +147,7 @@ def audit_image_inventory(metadata_df, image_dir):
     extra_files = [
         f
         for f in dir_files
-        if not f.startswith(".")
-        and f not in {f"{i}.jpg" for i in expected_ids}
+        if not f.startswith(".") and f not in {f"{i}.jpg" for i in expected_ids}
     ]
 
     inventory_df = metadata_df.copy()
@@ -216,10 +216,16 @@ def audit_duplicate_images(inventory_df):
     members = []
     for number, group in enumerate(groups, 1):
         # Restore each file's IDs and labels without repeating identical metadata rows.
-        rows = readable.loc[readable["file_path"].isin(group), columns].drop_duplicates()
+        rows = readable.loc[
+            readable["file_path"].isin(group), columns
+        ].drop_duplicates()
         rows = rows.assign(group=number)
         members.append(rows)
-    group_df = pd.concat(members, ignore_index=True) if members else pd.DataFrame(columns=["group", *columns])
+    group_df = (
+        pd.concat(members, ignore_index=True)
+        if members
+        else pd.DataFrame(columns=["group", *columns])
+    )
 
     summary = {
         "compared_files": len(paths) - len(read_failures),
@@ -235,11 +241,17 @@ def audit_duplicate_images(inventory_df):
     for _, rows in group_df.groupby("group"):
         flags = set(rows["train"])
         # Count distinct IDs per split; one group can count within and across splits.
-        summary["within_train_groups"] += rows.loc[rows["train"] == True, "mapillary_image_id"].nunique() >= 2
-        summary["within_test_groups"] += rows.loc[rows["train"] == False, "mapillary_image_id"].nunique() >= 2
+        summary["within_train_groups"] += (
+            rows.loc[rows["train"] == True, "mapillary_image_id"].nunique() >= 2
+        )
+        summary["within_test_groups"] += (
+            rows.loc[rows["train"] == False, "mapillary_image_id"].nunique() >= 2
+        )
         summary["cross_split_groups"] += flags == {True, False}
         # Multiple labels for identical files indicate a labeling conflict.
         summary["conflicting_surface_type_groups"] += rows["surface_type"].nunique() > 1
-        summary["conflicting_surface_quality_groups"] += rows["surface_quality"].nunique() > 1
+        summary["conflicting_surface_quality_groups"] += (
+            rows["surface_quality"].nunique() > 1
+        )
 
     return summary, group_df, read_failures
