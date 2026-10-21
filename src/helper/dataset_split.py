@@ -1,12 +1,13 @@
 import os
-from typing import Tuple, Dict, Any
+from typing import Any
+
 import pandas as pd
 
 
 def filter_usable_dataset(
     inventory_df: pd.DataFrame,
     duplicate_groups: pd.DataFrame,
-) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Filter out unreadable images and conflicting duplicate pairs."""
     conflicting_ids = []
     for _, rows in duplicate_groups.groupby("group"):
@@ -98,7 +99,7 @@ def generate_dataset_splits(
 def verify_dataset_splits(
     split_df: pd.DataFrame,
     duplicate_groups: pd.DataFrame,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Verify disjointness, test preservation, zero duplicate leakage, and coverage."""
     train_ids = set(split_df.loc[split_df["split"] == "train", "mapillary_image_id"])
     val_ids = set(split_df.loc[split_df["split"] == "val", "mapillary_image_id"])
@@ -133,15 +134,17 @@ def verify_dataset_splits(
     total_records = len(split_df)
     coverage_ok = len(train_ids) + len(val_ids) + len(test_ids) == total_records
 
-    assert is_disjoint, f"Partitions overlap! Overlaps: TV={len(train_val_overlap)}, TT={len(train_test_overlap)}, VT={len(val_test_overlap)}"
+    assert is_disjoint, (
+        f"Partitions overlap! Overlaps: TV={len(train_val_overlap)}, TT={len(train_test_overlap)}, VT={len(val_test_overlap)}"
+    )
     assert test_preserved, "Published test set was altered!"
     assert zero_leakage, f"Duplicate groups leaked across splits: {leakage_groups}"
     assert coverage_ok, "Partition counts do not sum to total records!"
 
     counts = split_df["split"].value_counts().to_dict()
     proportions = (
-        split_df["split"].value_counts(normalize=True) * 100
-    ).round(2).to_dict()
+        (split_df["split"].value_counts(normalize=True) * 100).round(2).to_dict()
+    )
     type_distribution = pd.crosstab(
         split_df["surface_type"], split_df["split"], margins=True
     )
