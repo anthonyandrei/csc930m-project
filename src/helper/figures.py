@@ -49,9 +49,7 @@ def crop_comparison_figure(split_df, sizes):
                 f"Original {size} | {record.mapillary_image_id}",
                 fill="black",
             )
-            caption.text(
-                (330, row * 240 + 5), "Prepared (128, 96)", fill="black"
-            )
+            caption.text((330, row * 240 + 5), "Prepared (128, 96)", fill="black")
             break
         else:
             raise ValueError(f"No included training example with size {size}")
