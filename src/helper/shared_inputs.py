@@ -5,7 +5,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageOps
-from sklearn.metrics import accuracy_score, confusion_matrix, precision_recall_fscore_support
+from sklearn.metrics import (
+    accuracy_score,
+    confusion_matrix,
+    precision_recall_fscore_support,
+)
 
 SURFACE_TYPES = ("asphalt", "concrete", "paving_stones", "sett", "unpaved")
 LABEL_IDS = {name: number for number, name in enumerate(SURFACE_TYPES)}
