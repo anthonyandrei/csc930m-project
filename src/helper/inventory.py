@@ -45,7 +45,7 @@ EXPECTED_COLUMNS = [
 
 def get_environment_info():
     """Return the Python, OS, and package versions shown in the notebook."""
-    packages = ["numpy", "pandas", "opencv-python", "pillow", "scikit-learn"]
+    packages = ["numpy", "pandas", "opencv-python", "pillow", "scikit-learn", "torch"]
     versions = {}
     for pkg in packages:
         try:
