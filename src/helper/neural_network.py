@@ -22,17 +22,24 @@ NUM_CLASSES = len(SURFACE_TYPES)
 
 
 def get_device():
-    """Select the best available device, picking the GPU with the most free VRAM if available."""
+    """Select the best available device, verifying GPU architecture compatibility."""
     if torch.cuda.is_available():
         try:
             free_mem = []
             for i in range(torch.cuda.device_count()):
+                test_tensor = torch.zeros(1, device=f"cuda:{i}") + 1
+                del test_tensor
                 free, _ = torch.cuda.mem_get_info(i)
                 free_mem.append((free, i))
-            free_mem.sort(reverse=True)
-            return torch.device(f"cuda:{free_mem[0][1]}")
-        except Exception:
-            return torch.device("cuda:0")
+            if free_mem:
+                free_mem.sort(reverse=True)
+                return torch.device(f"cuda:{free_mem[0][1]}")
+        except Exception as error:
+            print(
+                f"Note: Installed PyTorch CUDA build does not include kernels for this GPU ({error}). Falling back to CPU.",
+                flush=True,
+            )
+            return torch.device("cpu")
     return torch.device("cpu")
 
 
@@ -70,10 +77,10 @@ def train_mlp_candidate(
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    x_train = torch.as_tensor(train_features, dtype=torch.float32)
-    y_train = torch.as_tensor(train_labels, dtype=torch.int64)
-    x_val = torch.as_tensor(val_features, dtype=torch.float32).to(device)
-    y_val = torch.as_tensor(val_labels, dtype=torch.int64).to(device)
+    x_train = torch.from_numpy(np.ascontiguousarray(train_features).copy()).float().to(device)
+    y_train = torch.from_numpy(np.ascontiguousarray(train_labels).copy()).long().to(device)
+    x_val = torch.from_numpy(np.ascontiguousarray(val_features).copy()).float().to(device)
+    y_val = torch.from_numpy(np.ascontiguousarray(val_labels).copy()).long().to(device)
 
     model = build_mlp(
         input_dim=train_features.shape[1],
@@ -91,13 +98,13 @@ def train_mlp_candidate(
 
     for _ in range(epochs):
         model.train()
-        permutation = torch.randperm(num_samples)
+        permutation = torch.randperm(num_samples, device=device)
         epoch_loss_sum = 0.0
 
         for start_idx in range(0, num_samples, batch_size):
             batch_indices = permutation[start_idx : start_idx + batch_size]
-            batch_x = x_train[batch_indices].to(device)
-            batch_y = y_train[batch_indices].to(device)
+            batch_x = x_train[batch_indices]
+            batch_y = y_train[batch_indices]
 
             optimizer.zero_grad()
             logits = model(batch_x)
@@ -145,7 +152,7 @@ def tune_neural_network(
     """Execute the full 45-candidate Cartesian grid search and extract top five."""
     if device is None:
         device = get_device()
-    print(f"Neural Network training device: {device}")
+    print(f"Neural Network training device: {device}", flush=True)
 
     started = perf_counter()
     candidates = []
@@ -205,7 +212,7 @@ def predict_neural_network(model, features, device=None):
 
     model.eval()
     with torch.no_grad():
-        x_tensor = torch.as_tensor(features, dtype=torch.float32).to(device)
+        x_tensor = torch.from_numpy(np.ascontiguousarray(features).copy()).float().to(device)
         logits = model(x_tensor)
         return logits.argmax(dim=1).cpu().numpy()
 
