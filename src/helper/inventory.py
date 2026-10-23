@@ -70,6 +70,7 @@ def load_and_validate_metadata(csv_path):
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"Metadata file not found at: {csv_path}")
 
+    # Preserve image IDs as strings so filenames retain their exact digits.
     df = pd.read_csv(csv_path, dtype={"mapillary_image_id": str})
 
     missing_cols = set(EXPECTED_COLUMNS) - set(df.columns)
@@ -139,6 +140,7 @@ def audit_image_inventory(metadata_df, image_dir):
 
         try:
             with Image.open(file_path) as img:
+                # Decode all pixels: opening the header alone does not prove the image is readable.
                 img.load()
             readable_paths[img_id] = file_path
         except Exception as err:
@@ -180,6 +182,7 @@ def audit_duplicate_images(inventory_df):
     and paths that could not be read while hashing. Within-partition and
     cross-split group counts can overlap for groups with several members.
     """
+    # First group file hashes, then confirm equal bytes and restore metadata for each group.
     readable = inventory_df.loc[inventory_df["is_readable"]]
     # Repeated metadata rows should not make a file count as its own duplicate.
     paths = readable["file_path"].drop_duplicates()

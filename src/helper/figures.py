@@ -6,12 +6,18 @@ from src.helper.shared_inputs import prepare_image
 
 
 def training_examples_figure(inventory_df, example_ids):
-    """Show the chosen readable training images with their labels and IDs."""
+    """Return a Pillow grid of chosen readable images from the published training set.
+
+    example_ids maps surface types to ordered image-ID lists. The fixed canvas
+    fits five class rows with two images each; each selected ID must exist in
+    the readable training inventory and match its requested surface type.
+    """
     training_by_id = inventory_df.loc[
         inventory_df["train"] & inventory_df["is_readable"]
     ].set_index("mapillary_image_id")
     figure = Image.new("RGB", (900, 1400), "white")
     labels = ImageDraw.Draw(figure)
+    # Mapping order sets class rows; each ID list sets image columns.
     for row, (surface_type, ids) in enumerate(example_ids.items()):
         for column, image_id in enumerate(ids):
             example = training_by_id.loc[image_id]
@@ -28,7 +34,12 @@ def training_examples_figure(inventory_df, example_ids):
 
 
 def crop_comparison_figure(split_df, sizes):
-    """Show the first included training image of each size beside its prepared pixels."""
+    """Return original/prepared pairs for requested (width, height) sizes.
+
+    Search assigned training rows in order and take the first match per size.
+    The fixed canvas fits two size rows. Raise ValueError if a requested size
+    has no training example; prepare_image supplies the same pixels as modeling.
+    """
     training_examples = split_df.loc[split_df["split"] == "train"]
     comparison = Image.new("RGB", (570, 480), "white")
     caption = ImageDraw.Draw(comparison)
@@ -40,6 +51,7 @@ def crop_comparison_figure(split_df, sizes):
                 original = source.convert("RGB")
                 prepared = prepare_image(record.file_path)
             comparison.paste(original, (10, row * 240 + 25))
+            # Convert normalized model pixels back to displayable byte values.
             comparison.paste(
                 Image.fromarray((prepared * 255).astype("uint8")),
                 (330, row * 240 + 25),
@@ -52,5 +64,6 @@ def crop_comparison_figure(split_df, sizes):
             caption.text((330, row * 240 + 5), "Prepared (128, 96)", fill="black")
             break
         else:
+            # This loop else runs only when no matching image reached break.
             raise ValueError(f"No included training example with size {size}")
     return comparison

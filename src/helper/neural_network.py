@@ -22,7 +22,11 @@ NUM_CLASSES = len(SURFACE_TYPES)
 
 
 def get_device():
-    """Select the best available device, verifying GPU architecture compatibility."""
+    """Choose the working CUDA device with most free memory, or fall back to CPU.
+
+    Run a small operation on each GPU to check kernel compatibility. Any
+    exception during GPU probing triggers the CPU fallback.
+    """
     if torch.cuda.is_available():
         try:
             free_mem = []
@@ -44,7 +48,13 @@ def get_device():
 
 
 def build_mlp(input_dim, num_classes, num_layers, hidden_neurons):
-    """Build a sequential feedforward network with ReLU hidden activations."""
+    """Build an MLP (multilayer perceptron) mapping flat pixels to class scores.
+
+    num_layers counts hidden layers, all with hidden_neurons units. Each uses
+    ReLU, which replaces negative activations with zero. The final linear layer
+    returns num_classes raw scores (logits); CrossEntropyLoss handles softmax
+    internally when converting those scores into a training loss.
+    """
     if num_layers < 1:
         raise ValueError("Network must have at least 1 hidden layer")
     layers = []
@@ -70,13 +80,23 @@ def train_mlp_candidate(
     seed=42,
     device=None,
 ):
-    """Train one MLP configuration using standard mini-batch SGD and record loss history."""
+    """Train one MLP with mini-batch stochastic gradient descent (SGD).
+
+    Feature inputs contain flattened normalized images, one per row; labels
+    are integer IDs in SURFACE_TYPES order. Copy both splits onto the selected
+    device. Each epoch shuffles training rows and updates weights batch by
+    batch; validation only measures loss. Return the final epoch's model,
+    validation scores/predictions, per-epoch losses, and device. There is no
+    early stopping or selection of an earlier epoch's weights.
+    """
     if device is None:
         device = get_device()
 
+    # Start each candidate from the same seeds for weight initialization and shuffling.
     torch.manual_seed(seed)
     np.random.seed(seed)
 
+    # Make contiguous writable copies before converting arrays to device tensors.
     x_train = torch.from_numpy(np.ascontiguousarray(train_features).copy()).float().to(device)
     y_train = torch.from_numpy(np.ascontiguousarray(train_labels).copy()).long().to(device)
     x_val = torch.from_numpy(np.ascontiguousarray(val_features).copy()).float().to(device)
@@ -98,6 +118,7 @@ def train_mlp_candidate(
 
     for _ in range(epochs):
         model.train()
+        # Visit every training row once per epoch in a newly shuffled order.
         permutation = torch.randperm(num_samples, device=device)
         epoch_loss_sum = 0.0
 
@@ -106,16 +127,19 @@ def train_mlp_candidate(
             batch_x = x_train[batch_indices]
             batch_y = y_train[batch_indices]
 
+            # Clear old gradients, compute batch loss, then use its gradients to update weights.
             optimizer.zero_grad()
             logits = model(batch_x)
             loss = criterion(logits, batch_y)
             loss.backward()
             optimizer.step()
 
+            # Weight batch means by their sizes so a smaller final batch counts correctly.
             epoch_loss_sum += loss.item() * len(batch_indices)
 
         train_losses.append(epoch_loss_sum / num_samples)
 
+        # Measure validation loss with fixed weights and without building a gradient graph.
         model.eval()
         with torch.no_grad():
             val_logits = model(x_val)
@@ -149,7 +173,14 @@ def tune_neural_network(
     seed=42,
     device=None,
 ):
-    """Execute the full 45-candidate Cartesian grid search and extract top five."""
+    """Train all 45 combinations of hidden depth, width, and learning rate.
+
+    Inputs follow train_mlp_candidate; every run uses the same splits, epoch
+    count, batch size, and seed. Rank final-epoch validation scores by macro-F1,
+    then accuracy, then grid order. Return the selected trained model, all
+    candidate records, the top five, best_candidate, elapsed seconds, and device.
+    Selection does not refit the model or use test data.
+    """
     if device is None:
         device = get_device()
     print(f"Neural Network training device: {device}", flush=True)
@@ -158,6 +189,7 @@ def tune_neural_network(
     candidates = []
     trained_models = []
 
+    # Nested loops visit every depth/width/rate combination, training a fresh model each time.
     for num_layers in GRID_LAYERS:
         for hidden_neurons in GRID_NEURONS:
             for lr in GRID_LEARNING_RATES:
@@ -174,6 +206,7 @@ def tune_neural_network(
                     seed=seed,
                     device=device,
                 )
+                # Store each model separately and keep its index with its scores and loss history.
                 candidate_record = {
                     "num_layers": num_layers,
                     "hidden_neurons": hidden_neurons,
@@ -203,7 +236,11 @@ def tune_neural_network(
 
 
 def predict_neural_network(model, features, device=None):
-    """Predict integer class labels for a 2D float32 pixel matrix."""
+    """Return one class ID per flattened pixel row, using the model's device by default.
+
+    Evaluation mode and disabled gradients keep weights fixed. The largest
+    raw class score determines the prediction; equal scores favor the lowest ID.
+    """
     if device is None:
         try:
             device = next(model.parameters()).device
@@ -218,7 +255,11 @@ def predict_neural_network(model, features, device=None):
 
 
 def plot_learning_curves(train_losses, val_losses, width=640, height=360):
-    """Render training and validation loss curves using Pillow (zero external plotting dependency)."""
+    """Return a Pillow image of training and validation cross-entropy by epoch.
+
+    Pass nonempty loss lists of matching length, with one value per epoch.
+    Both curves share a zero-based loss scale with 10 percent headroom.
+    """
     image = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(image)
 
@@ -230,6 +271,7 @@ def plot_learning_curves(train_losses, val_losses, width=640, height=360):
     min_loss = 0.0
     max_loss = max(all_losses) * 1.1 if max(all_losses) > 0 else 1.0
     epochs = len(train_losses)
+    # Scale epoch positions across the plot; avoid division by zero for a single epoch.
     denom = max(1, epochs - 1)
 
     for i in range(5):
@@ -264,6 +306,7 @@ def plot_learning_curves(train_losses, val_losses, width=640, height=360):
     )
 
     def to_coords(losses):
+        """Scale epochs left to right and losses upward; image y increases downward."""
         coords = []
         for i, val in enumerate(losses):
             x = pad_left + int(i / denom * plot_w)
