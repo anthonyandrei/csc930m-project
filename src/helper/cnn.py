@@ -13,12 +13,18 @@ def require_cuda():
     """Return a tested CUDA device; raise RuntimeError if CUDA cannot run."""
     if not torch.cuda.is_available():
         raise RuntimeError("CNN training requires a working CUDA GPU")
-    try:
-        device = torch.device("cuda:0")
-        (torch.ones(1, device=device) + 1).cpu()
-        torch.cuda.synchronize(device)
-    except Exception as error:
-        raise RuntimeError("CNN training requires a compatible CUDA GPU") from error
+    working = []
+    for index in range(torch.cuda.device_count()):
+        try:
+            device = torch.device(f"cuda:{index}")
+            (torch.ones(1, device=device) + 1).cpu()
+            torch.cuda.synchronize(device)
+            working.append((torch.cuda.mem_get_info(device)[0], index))
+        except Exception:
+            continue
+    if not working:
+        raise RuntimeError("CNN training requires a compatible CUDA GPU")
+    device = torch.device(f"cuda:{max(working)[1]}")
     print(f"CNN training device: {torch.cuda.get_device_name(device)} ({device})", flush=True)
     return device
 
