@@ -30,29 +30,47 @@ def split_class_balance_table(split_df):
     table.loc["total"] = totals
     return table
 
-def recover_baseline_validation_predictions(model_key, namespace, artifact_dir=None):
-    """Look up validation predictions from memory or saved artifacts without retraining."""
+def recover_baseline_validation_predictions(
+    model_key, namespace, artifact_dir=None, expected_image_ids=None
+):
+    """Look up validation predictions from memory or ID-aligned CSV without retraining."""
     selected_var = f"{model_key}_selected"
     if selected_var in namespace and isinstance(namespace[selected_var], dict):
         selected = namespace[selected_var]
         if "predictions" in selected:
+            preds = np.asarray(selected["predictions"], dtype=np.int64)
+            if expected_image_ids is not None and len(preds) != len(expected_image_ids):
+                raise ValueError(
+                    f"{selected_var}['predictions'] length does not match expected_image_ids"
+                )
             return {
                 "available": True,
                 "source": f"in-memory {selected_var}['predictions']",
-                "predictions": np.asarray(selected["predictions"], dtype=np.int64),
+                "predictions": preds,
             }
 
     if artifact_dir is not None:
         base = Path(artifact_dir)
         csv_path = base / f"{model_key}_val_predictions.csv"
         if csv_path.exists():
-            frame = pd.read_csv(csv_path)
-            if "prediction" in frame.columns:
-                return {
-                    "available": True,
-                    "source": str(csv_path),
-                    "predictions": frame["prediction"].to_numpy(dtype=np.int64),
-                }
+            frame = pd.read_csv(csv_path, dtype={"image_id": str})
+            if "image_id" not in frame.columns or "prediction" not in frame.columns:
+                raise ValueError(f"{csv_path} must contain 'image_id' and 'prediction' columns")
+            if frame["image_id"].duplicated().any():
+                raise ValueError(f"{csv_path} contains duplicate image_id rows")
+            if expected_image_ids is not None:
+                expected = [str(image_id) for image_id in expected_image_ids]
+                if set(frame["image_id"]) != set(expected):
+                    raise ValueError(f"{csv_path} image_id set does not match validation split")
+                aligned = frame.set_index("image_id").loc[expected, "prediction"]
+                preds = aligned.to_numpy(dtype=np.int64)
+            else:
+                preds = frame["prediction"].to_numpy(dtype=np.int64)
+            return {
+                "available": True,
+                "source": str(csv_path),
+                "predictions": preds,
+            }
 
     return {
         "available": False,
@@ -62,6 +80,7 @@ def recover_baseline_validation_predictions(model_key, namespace, artifact_dir=N
             "baseline training/tuning was not rerun."
         ),
     }
+
 
 def summarize_confusion_errors(labels, predictions, top_n=5):
     """Return evaluation report and top off-diagonal confusion pairs."""
