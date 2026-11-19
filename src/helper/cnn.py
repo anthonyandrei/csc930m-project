@@ -43,12 +43,12 @@ def require_cuda():
     return device
 
 
-def build_cnn(depth, filters):
+def build_cnn(depth, filters, dropout_p=0.0):
     """Build a CNN for 96 by 128 RGB images with five output scores.
 
     Depth selects one to three blocks from the filter-count sequence. Each
     block has a He-initialized convolution, ReLU, and max-pooling; the last
-    feature maps feed one linear classifier.
+    feature maps feed optional dropout and one linear classifier.
     """
     layers = []
     channels = 3
@@ -62,7 +62,10 @@ def build_cnn(depth, filters):
     pooled_height = 96 // 2**depth
     pooled_width = 128 // 2**depth
     flattened_size = channels * pooled_height * pooled_width
-    layers.extend((nn.Flatten(), nn.Linear(flattened_size, len(SURFACE_TYPES))))
+    layers.append(nn.Flatten())
+    if dropout_p > 0.0:
+        layers.append(nn.Dropout(p=dropout_p))
+    layers.append(nn.Linear(flattened_size, len(SURFACE_TYPES)))
     return nn.Sequential(*layers)
 
 
@@ -84,6 +87,103 @@ def predict_cnn(model, images, batch_size=64):
     return np.concatenate(predictions)
 
 
+def train_cnn_candidate(
+    x_train,
+    y_train,
+    x_val,
+    y_val,
+    val_images,
+    val_labels,
+    *,
+    depth,
+    filters,
+    rate,
+    device,
+    dropout_p=0.0,
+    class_weights=None,
+    early_stopping=False,
+    patience=3,
+    epochs=20,
+    batch_size=64,
+    seed=42,
+):
+    """Train one CNN candidate with plain SGD and exact weighted-mean loss tracking."""
+    torch.manual_seed(seed)
+    model = build_cnn(depth, filters, dropout_p=dropout_p).to(device)
+    optimizer = torch.optim.SGD(model.parameters(), lr=rate)
+    weight_tensor = (
+        torch.tensor(class_weights, dtype=torch.float32, device=device)
+        if class_weights is not None
+        else None
+    )
+    train_criterion = nn.CrossEntropyLoss(weight=weight_tensor)
+    eval_criterion = nn.CrossEntropyLoss(weight=weight_tensor, reduction="sum")
+
+    train_losses, val_losses = [], []
+    best_val_loss = float("inf")
+    best_epoch = epochs
+    best_state = None
+    no_improve = 0
+
+    for epoch in range(1, epochs + 1):
+        model.train()
+        order = torch.randperm(len(x_train), device=device)
+        train_loss_sum = 0.0
+        train_weight_sum = 0.0
+        for start in range(0, len(order), batch_size):
+            indices = order[start : start + batch_size]
+            batch_y = y_train[indices]
+            optimizer.zero_grad()
+            logits = model(x_train[indices])
+            loss = train_criterion(logits, batch_y)
+            loss.backward()
+            optimizer.step()
+            batch_w = weight_tensor[batch_y].sum().item() if weight_tensor is not None else len(batch_y)
+            train_loss_sum += loss.item() * batch_w
+            train_weight_sum += batch_w
+        train_losses.append(train_loss_sum / train_weight_sum)
+
+        model.eval()
+        val_loss_sum = 0.0
+        val_weight_sum = 0.0
+        with torch.no_grad():
+            for start in range(0, len(x_val), batch_size):
+                batch_x = x_val[start : start + batch_size]
+                batch_y = y_val[start : start + batch_size]
+                val_loss_sum += eval_criterion(model(batch_x), batch_y).item()
+                val_weight_sum += (
+                    weight_tensor[batch_y].sum().item() if weight_tensor is not None else len(batch_y)
+                )
+        val_loss = val_loss_sum / val_weight_sum
+        val_losses.append(val_loss)
+
+        if early_stopping:
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_epoch = epoch
+                best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+                no_improve = 0
+            else:
+                no_improve += 1
+                if no_improve >= patience:
+                    break
+
+    if early_stopping and best_state is not None:
+        model.load_state_dict(best_state)
+
+    predictions = predict_cnn(model, val_images)
+    scores = evaluate_predictions(val_labels, predictions)
+    return {
+        "model": model,
+        "predictions": predictions,
+        "scores": scores,
+        "train_losses": train_losses,
+        "val_losses": val_losses,
+        "epochs_run": len(val_losses),
+        "best_epoch": best_epoch if early_stopping else len(val_losses),
+    }
+
+
 def tune_cnn(train, validation):
     """Train 18 CUDA candidates and return the validation-selected final model.
 
@@ -101,61 +201,42 @@ def tune_cnn(train, validation):
     train_images = np.ascontiguousarray(train["images"].transpose(0, 3, 1, 2))
     x_train = torch.from_numpy(train_images).to(device)
     del train_images
-    y_train = torch.as_tensor(train["labels"], dtype=torch.long, device=device)
+    y_train = torch.as_tensor(np.array(train["labels"], copy=True), dtype=torch.long, device=device)
     val_images = np.ascontiguousarray(validation["images"].transpose(0, 3, 1, 2))
     x_val = torch.from_numpy(val_images).to(device)
     del val_images
-    y_val = torch.as_tensor(validation["labels"], dtype=torch.long, device=device)
+    y_val = torch.as_tensor(np.array(validation["labels"], copy=True), dtype=torch.long, device=device)
 
     candidates = []
     best_model = None
     for depth in (1, 2, 3):
         for filters in FILTERS:
             for rate in RATES:
-                torch.manual_seed(42)
-                model = build_cnn(depth, filters).to(device)
-                optimizer = torch.optim.SGD(model.parameters(), lr=rate)
-                criterion = nn.CrossEntropyLoss()
-                train_losses, val_losses = [], []
-
-                for epoch in range(20):
-                    model.train()
-                    order = torch.randperm(len(x_train), device=device)
-                    train_loss_sum = 0.0
-                    for start in range(0, len(order), 64):
-                        indices = order[start : start + 64]
-                        optimizer.zero_grad()
-                        loss = criterion(model(x_train[indices]), y_train[indices])
-                        loss.backward()
-                        optimizer.step()
-                        train_loss_sum += loss.item() * len(indices)
-                    train_losses.append(train_loss_sum / len(order))
-
-                    model.eval()
-                    val_loss_sum = 0.0
-                    with torch.no_grad():
-                        for start in range(0, len(x_val), 64):
-                            batch_x = x_val[start : start + 64]
-                            batch_y = y_val[start : start + 64]
-                            loss = criterion(model(batch_x), batch_y)
-                            val_loss_sum += loss.item() * len(batch_y)
-                    val_losses.append(val_loss_sum / len(x_val))
-
-                predictions = predict_cnn(model, validation["images"])
-                scores = evaluate_predictions(validation["labels"], predictions)
+                run = train_cnn_candidate(
+                    x_train,
+                    y_train,
+                    x_val,
+                    y_val,
+                    validation["images"],
+                    validation["labels"],
+                    depth=depth,
+                    filters=filters,
+                    rate=rate,
+                    device=device,
+                )
                 candidate = {
                     "depth": depth,
                     "filters": filters[:depth],
                     "learning_rate": rate,
-                    "validation_macro_f1": scores["macro_f1"],
-                    "validation_accuracy": scores["accuracy"],
-                    "predictions": predictions,
-                    "train_losses": train_losses,
-                    "val_losses": val_losses,
+                    "validation_macro_f1": run["scores"]["macro_f1"],
+                    "validation_accuracy": run["scores"]["accuracy"],
+                    "predictions": run["predictions"],
+                    "train_losses": run["train_losses"],
+                    "val_losses": run["val_losses"],
                 }
                 candidates.append(candidate)
                 if rank_candidates(candidates)[0] is candidate:
-                    best_model = model
+                    best_model = run["model"]
                 print(f"Completed {len(candidates)}/18 configurations", flush=True)
 
     top_five = rank_candidates(candidates)
