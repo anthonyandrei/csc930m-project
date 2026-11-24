@@ -5,7 +5,11 @@ import pandas as pd
 import torch
 
 from src.helper.cnn import require_cuda, train_cnn_candidate
-from src.helper.shared_inputs import SURFACE_TYPES, evaluate_predictions, rank_candidates
+from src.helper.shared_inputs import SURFACE_TYPES, rank_candidates
+
+PUBLISHED_WEIGHTED_F1 = 0.5662726144042449
+PUBLISHED_CONCRETE_CORRECT = 46
+PUBLISHED_CONCRETE_TOTAL = 210
 
 
 def compute_class_weights(train_labels):
@@ -99,17 +103,12 @@ def run_improvement_suite(train, validation):
     }
 
 
-def run_weighted_followup(train, validation, baseline):
-    """Compare two epoch-40 checkpoints against the exact saved weighted baseline.
+def run_weighted_followup(train, validation):
+    """Compare two epoch-40 checkpoints against the published weighted baseline.
 
-    Split dictionaries contain the prepared images and labels. The baseline is
-    the selected record from the earlier improvement suite. Return the table
-    and the winning trial, or None if the baseline retains its place.
+    Split dictionaries contain the prepared images and labels. Return the table
+    and the winning trial, or None if the published configuration stays selected.
     """
-    baseline_scores = evaluate_predictions(validation["labels"], baseline["predictions"])
-    baseline_f1 = baseline_scores["macro_f1"]
-    if baseline["name"] != "class_weights" or baseline["epochs_run"] != 20:
-        raise ValueError("Expected the 20-epoch class-weighted validation baseline")
     device = require_cuda()
     x_train, y_train = _training_tensors(train, device)
     x_val, y_val = _training_tensors(validation, device)
@@ -137,16 +136,17 @@ def run_weighted_followup(train, validation, baseline):
 
     qualified = [
         trial for trial in trials
-        if trial["validation_macro_f1"] > baseline_f1 and trial["concrete_tp"] >= 46
+        if trial["validation_macro_f1"] > PUBLISHED_WEIGHTED_F1
+        and trial["concrete_tp"] >= PUBLISHED_CONCRETE_CORRECT
     ]
     winner = max(qualified, key=lambda trial: trial["validation_macro_f1"], default=None)
     columns = ["name", "epochs_run", "validation_macro_f1", "concrete_recall", "concrete_tp"]
     reference = {
-        "name": "Fixed 0.03 (baseline)",
-        "epochs_run": baseline["epochs_run"],
-        "validation_macro_f1": baseline_f1,
-        "concrete_recall": baseline_scores["per_class"].loc["concrete", "recall"],
-        "concrete_tp": baseline_scores["confusion_matrix"].loc["concrete", "concrete"],
+        "name": "Fixed 0.03 (published baseline)",
+        "epochs_run": 20,
+        "validation_macro_f1": PUBLISHED_WEIGHTED_F1,
+        "concrete_recall": PUBLISHED_CONCRETE_CORRECT / PUBLISHED_CONCRETE_TOTAL,
+        "concrete_tp": PUBLISHED_CONCRETE_CORRECT,
     }
     table = pd.DataFrame([reference, *trials], columns=columns)
     table["selected"] = [winner is None, *(trial is winner for trial in trials)]
