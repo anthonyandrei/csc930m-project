@@ -106,8 +106,13 @@ def train_cnn_candidate(
     epochs=20,
     batch_size=64,
     seed=42,
+    rate_changes=None,
 ):
-    """Train one CNN candidate with plain SGD and exact weighted-mean loss tracking."""
+    """Train with plain SGD and track weighted-mean losses and the actual epoch rates.
+
+    Rate changes map one-based epoch numbers to rates applied before the first
+    batch of those epochs. The initial rate stays in effect until the first change.
+    """
     torch.manual_seed(seed)
     model = build_cnn(depth, filters, dropout_p=dropout_p).to(device)
     optimizer = torch.optim.SGD(model.parameters(), lr=rate)
@@ -120,12 +125,17 @@ def train_cnn_candidate(
     eval_criterion = nn.CrossEntropyLoss(weight=weight_tensor, reduction="sum")
 
     train_losses, val_losses = [], []
+    learning_rates = []
+    rate_changes = rate_changes or {}
     best_val_loss = float("inf")
     best_epoch = epochs
     best_state = None
     no_improve = 0
 
     for epoch in range(1, epochs + 1):
+        if epoch in rate_changes:
+            optimizer.param_groups[0]["lr"] = rate_changes[epoch]
+        learning_rates.append(optimizer.param_groups[0]["lr"])
         model.train()
         order = torch.randperm(len(x_train), device=device)
         train_loss_sum = 0.0
@@ -179,6 +189,7 @@ def train_cnn_candidate(
         "scores": scores,
         "train_losses": train_losses,
         "val_losses": val_losses,
+        "learning_rates": learning_rates,
         "epochs_run": len(val_losses),
         "best_epoch": best_epoch if early_stopping else len(val_losses),
     }
